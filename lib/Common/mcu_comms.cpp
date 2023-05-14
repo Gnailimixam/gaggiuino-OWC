@@ -130,7 +130,19 @@ void McuComms::sensorStateSnapshotReceived(SensorStateSnapshot& snapshot) const 
   }
 }
 
-void McuComms::log(const char* format, ...) {
+void McuComms::weightReceived(float weight) const {
+  if (weightReceivedCallback) {
+    weightReceivedCallback(weight);
+  }
+}
+
+void McuComms::responseReceived(McuCommsResponse& response) const {
+  if (responseReceivedCallback) {
+    responseReceivedCallback(response);
+  }
+}
+
+void McuComms::log(const char* format, ...) const {
   if (!debugPort) return;
 
   std::array<char,128>buffer;
@@ -142,7 +154,7 @@ void McuComms::log(const char* format, ...) {
   debugPort->print(buffer.data());
 }
 
-void McuComms::logBufferHex(vector<uint8_t>& buffer, size_t dataSize) {
+void McuComms::logBufferHex(vector<uint8_t>& buffer, size_t dataSize) const {
   if (!debugPort) return;
 
   std::array<char, 3>hex;
@@ -156,16 +168,40 @@ void McuComms::logBufferHex(vector<uint8_t>& buffer, size_t dataSize) {
   debugPort->println();
 }
 
+void McuComms::establishConnection(uint32_t timeout) {
+  if (timeout <= 0) return;
+
+  uint32_t waitingStart = millis();
+  bool connected = false;
+  while (millis() - waitingStart < timeout && lastByteReceived == 0) {
+    sendBeacon();
+    readDataAndTick();
+    delay(10);
+  }
+
+  if (lastByteReceived > 0) {
+    log("Successful connection after=%dms", millis() - waitingStart);
+  } else {
+    log("Unsuccessful connection after=%dms", millis() - waitingStart);
+  }
+}
+
+void McuComms::sendBeacon() {
+  uint16_t messageSize = transfer.txObj(McuCommsMessageType::MCUC_BEACON);
+  transfer.sendData(messageSize, McuCommsMessageType::MCUC_BEACON);
+}
+
 //---------------------------------------------------------------------------------
 //---------------------------    PUBLIC METHODS       ----------------------------
 //---------------------------------------------------------------------------------
-void McuComms::begin(Stream& serial, size_t pcktSize) {
-  McuComms::packetSize = pcktSize;
-  log("Staring with packetSize: %d\n", pcktSize);
+void McuComms::begin(Stream& serial, uint32_t waitConnectionMillis, size_t packetSize) {
+  McuComms::packetSize = packetSize;
+  log("Staring with packetSize: %d\n", packetSize);
 #ifdef ESP32
   log("Starting for ESP32\n");
 #endif
   transfer.begin(serial, true);
+  establishConnection(waitConnectionMillis);
 }
 
 void McuComms::setDebugPort(Stream* dbgPort) {
@@ -184,52 +220,87 @@ void McuComms::setSensorStateSnapshotCallback(SensorStateSnapshotReceivedCallbac
   sensorStateSnapshotCallback = callback;
 }
 
+void McuComms::setWeightReceivedCallback(WeightReceivedCallback callback) {
+  weightReceivedCallback = callback;
+}
+void McuComms::setResponseReceivedCallback(ResponseReceivedCallback callback) {
+  responseReceivedCallback = callback;
+}
+
 void McuComms::sendShotData(const ShotSnapshot& snapshot) {
   uint16_t messageSize = transfer.txObj(snapshot);
-  transfer.sendData(messageSize, PACKET_SHOT_SNAPSHOT);
+  transfer.sendData(messageSize, McuCommsMessageType::MCUC_DATA_SHOT_SNAPSHOT);
 }
 
 void McuComms::sendProfile(Profile& profile) {
   size_t dataSize = profileSerializer.neededBufferSize(profile);
   vector<uint8_t> buffer = profileSerializer.serializeProfile(profile);
-  sendMultiPacket(buffer, dataSize, PACKET_PROFILE);
+  sendMultiPacket(buffer, dataSize, McuCommsMessageType::MCUC_DATA_PROFILE);
 }
 
 void McuComms::sendSensorStateSnapshot(const SensorStateSnapshot& snapshot) {
   uint16_t messageSize = transfer.txObj(snapshot);
-  transfer.sendData(messageSize, PACKET_SENSOR_STATE_SNAPSHOT);
+  transfer.sendData(messageSize, McuCommsMessageType::MCUC_DATA_SENSOR_STATE_SNAPSHOT);
 }
 
-void McuComms::readData() {
+void McuComms::sendWeight(float weight) {
+  uint16_t messageSize = transfer.txObj(weight);
+  transfer.sendData(messageSize, McuCommsMessageType::MCUC_DATA_WEIGHT);
+}
+
+void McuComms::sendResponse(McuCommsResponse response) {
+  uint16_t messageSize = transfer.txObj(response);
+  transfer.sendData(messageSize, McuCommsMessageType::MCUC_RESPONSE);
+}
+
+void McuComms::readDataAndTick() {
   size_t availableData = transfer.available();
 
   if (availableData) {
     log("Some data is available\n");
-
-    switch (transfer.currentPacketID()) {
-    case PACKET_SHOT_SNAPSHOT: {
+    lastByteReceived = millis();
+    switch (static_cast<McuCommsMessageType>(transfer.currentPacketID())) {
+    case MCUC_BEACON: {
+      break;
+    } case MCUC_RESPONSE: {
+      log("Received a response packet\n");
+      McuCommsResponse response;
+      transfer.rxObj(response);
+      responseReceived(response);
+    } case MCUC_DATA_SHOT_SNAPSHOT: {
       log("Received a shot snapshot packet\n");
       ShotSnapshot snapshot;
       transfer.rxObj(snapshot);
       shotSnapshotReceived(snapshot);
       break;
-    } case PACKET_PROFILE: {
+    } case MCUC_DATA_PROFILE: {
       log("Received a profile packet\n");
       vector<uint8_t> data = receiveMultiPacket();
       Profile profile;
       profileSerializer.deserializeProfile(data, profile);
       profileReceived(profile);
       break;
-    } case PACKET_SENSOR_STATE_SNAPSHOT: {
+    } case MCUC_DATA_SENSOR_STATE_SNAPSHOT: {
       log("Received a sensor state snapshot packet\n");
       SensorStateSnapshot snapshot;
       transfer.rxObj(snapshot);
       sensorStateSnapshotReceived(snapshot);
+      break;
+    } case MCUC_DATA_WEIGHT: {
+      log("Received a weight packet\n");
+      float weight;
+      transfer.rxObj(weight);
+      weightReceived(weight);
       break;
     }
     default:
       log("WARN: Packet ID %d not handled\n", transfer.currentPacketID());
       break;
     }
+  }
+
+  if (millis() - lastBeaconSent > BEACON_TIME_DELTA_MSEC) {
+    sendBeacon();
+    lastBeaconSent = millis();
   }
 }
