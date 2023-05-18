@@ -9,16 +9,17 @@ PSM pump(zcPin, dimmerPin, PUMP_RANGE, ZC_MODE, 1, 6);
 
 float flowPerClickAtZeroBar = 0.27f;
 int maxPumpClicksPerSecond = 50;
-float fpc_multiplier = 1.2f;
+
+float fpc_multiplier = 0.83f;
 //https://www.desmos.com/calculator/axyl70gjae  - blue curve
 constexpr std::array<float, 7> pressureInefficiencyCoefficient {{
-  0.045f,
-  0.015f,
-  0.0033f,
-  0.000685f,
-  0.000045f,
-  0.009f,
-  -0.0018f
+  -0.128f,
+  0.00222,
+  -0.00184f,
+  0.0000915f,
+  0.00000594f,
+  -0.000000798f,
+  0.0000000186f
 }};
 
 // Initialising some pump specific specs, mainly:
@@ -28,7 +29,7 @@ void pumpInit(const int powerLineFrequency, const float pumpFlowAtZero) {
   // pump.freq = powerLineFrequency;
   maxPumpClicksPerSecond = powerLineFrequency;
   flowPerClickAtZeroBar = pumpFlowAtZero;
-  fpc_multiplier = 60.f / (float)maxPumpClicksPerSecond;
+  fpc_multiplier = 50.f / (float)maxPumpClicksPerSecond;
 }
 
 // Function that returns the percentage of clicks the pump makes in it's current phase
@@ -109,9 +110,12 @@ void pumpPhaseShift(void) {
 // Models the flow per click, follows a compromise between the schematic and recorded findings
 // plotted: https://www.desmos.com/calculator/eqynzclagu
 float getPumpFlowPerClick(const float pressure) {
-  float fpc = 0.f;
-  fpc = (pressureInefficiencyCoefficient[5] / pressure + pressureInefficiencyCoefficient[6]) * ( -pressure * pressure ) + ( flowPerClickAtZeroBar - pressureInefficiencyCoefficient[0]) - (pressureInefficiencyCoefficient[1] + (pressureInefficiencyCoefficient[2] - (pressureInefficiencyCoefficient[3] - pressureInefficiencyCoefficient[4] * pressure) * pressure) * pressure) * pressure;
-  return fpc * fpc_multiplier;
+  const float p = pressure;
+  const std::array<float, 7> pc = pressureInefficiencyCoefficient;
+
+  float fpc = flowPerClickAtZeroBar;
+  fpc += pc[0] + (pc[1] + (pc[2] + (pc[3] + (pc[4] + (pc[5] + pc[6] * p) * p) * p) * p) * p) * p;
+  return fmaxf(fpc * fpc_multiplier, 0.f);
 }
 
 // Follows the schematic from https://www.cemegroup.com/solenoid-pump/e5-60 modified to per-click
@@ -133,8 +137,7 @@ void setPumpFlow(const float targetFlow, const float pressureRestriction, const 
   // which is equivalent but will achieve smoother pressure management
   if (pressureRestriction > 0.f && currentState.smoothedPressure > pressureRestriction * 0.5f) {
     setPumpPressure(pressureRestriction, targetFlow, currentState);
-  }
-  else {
+  } else {
     float pumpPct = getClicksPerSecondForFlow(targetFlow, currentState.smoothedPressure) / (float)maxPumpClicksPerSecond;
     setPumpToRawValue(pumpPct * PUMP_RANGE);
   }
