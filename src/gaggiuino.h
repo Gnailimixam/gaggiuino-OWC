@@ -24,7 +24,7 @@
 #include "peripherals/led.h"
 
 // Define some const values
-#if defined SINGLE_BOARD
+#if defined SINGLE_BOARD || defined PT100
     #define GET_KTYPE_READ_EVERY    70 // max31855 amp module data read interval not recommended to be changed to lower than 70 (ms)
 #else
     #define GET_KTYPE_READ_EVERY    250 // max6675 amp module data read interval not recommended to be changed to lower than 250 (ms)
