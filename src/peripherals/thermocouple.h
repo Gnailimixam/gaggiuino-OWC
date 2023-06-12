@@ -31,7 +31,8 @@ static inline void thermocoupleInit(void) {
 }
 
 static inline float thermocoupleRead(void) {
-  return thermocouple.temperature(RNOMINAL, RREF);
+  //return thermocouple.temperature(RNOMINAL, RREF);
+  return 88;
 }
 
 #else
